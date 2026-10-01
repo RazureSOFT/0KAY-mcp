@@ -15,6 +15,8 @@ export interface McpServerConfig {
   url?: string
   headers?: Record<string, string>
   enabled?: boolean
+  /** Per-request timeout in ms (default: OKAY_MCP_TIMEOUT_MS or 30000). */
+  timeoutMs?: number
 }
 
 export interface McpToolInfo {
@@ -163,7 +165,7 @@ export class McpManager {
       const timer = setTimeout(() => {
         conn.pending.delete(id)
         reject(new Error(`MCP ${method} timed out`))
-      }, 30_000)
+      }, this.timeoutFor(conn))
       conn.pending.set(id, {
         resolve: (value) => { clearTimeout(timer); resolve(value) },
         reject: (error) => { clearTimeout(timer); reject(error) },
@@ -171,6 +173,14 @@ export class McpManager {
     })
     process.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`)
     return response
+  }
+
+  /** Resolve a server's request timeout (config > env > 30s). */
+  private timeoutFor(conn: Connection): number {
+    const configured = conn.config.timeoutMs
+    if (typeof configured === 'number' && Number.isFinite(configured) && configured > 0) return configured
+    const env = Number(process.env.OKAY_MCP_TIMEOUT_MS)
+    return Number.isFinite(env) && env > 0 ? env : 30_000
   }
 
   private async notify(conn: Connection, method: string, params: any): Promise<void> {
@@ -189,7 +199,7 @@ export class McpManager {
       method: 'POST',
       headers: { Accept: 'application/json, text/event-stream', 'Content-Type': 'application/json', 'MCP-Protocol-Version':'2024-11-05', ...(conn.sessionId ? {'Mcp-Session-Id':conn.sessionId}:{}), ...(conn.config.headers || {}) },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(30000),
+      signal: AbortSignal.timeout(this.timeoutFor(conn)),
     })
     if (!response.ok) throw new Error(`MCP server '${conn.config.id}' returned ${response.status}`)
     const session=response.headers.get('mcp-session-id');if(session)conn.sessionId=session
